@@ -47,7 +47,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
                 while let Some(read) = rb.next() {
                     let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_DATA_SIZE>;
                     let data = unsafe { core::ptr::read(ptr) };
-                    _ = tx.send(data);
+                    _ = tx.send(data).await;
                 }
             }
         }
