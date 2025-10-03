@@ -60,6 +60,8 @@ fn main() -> anyhow::Result<()> {
     } else {
         cmd = Command::new("rustup");
         cmd.args(["run", "nightly", "cargo"]);
+        // Workaround to make sure that the correct toolchain is used.
+        cmd.env_remove("RUSTC");
     }
     cmd.args([
         "build",
