@@ -1,16 +1,15 @@
-use std::{borrow::Borrow, net::SocketAddr};
+use std::{borrow::Borrow, net::SocketAddrV4};
 
 use arrayvec::ArrayVec;
+mod xdp_forwarder;
 use aya::{
     Ebpf, include_bytes_aligned,
     maps::{Array, MapData, RingBuf},
     programs::{Xdp, XdpFlags},
 };
 use clap::Parser;
-use futures::{StreamExt, stream::FuturesUnordered};
 use tokio::{
     io::unix::AsyncFd,
-    net::UdpSocket,
     signal,
     sync::{mpsc, oneshot},
 };
@@ -22,7 +21,7 @@ struct Args {
     #[arg(short, long)]
     iface: String,
     #[arg(short, long)]
-    listeners: Vec<SocketAddr>,
+    listeners: Vec<SocketAddrV4>,
 }
 
 const PACKET_DATA_SIZE: usize = 1232;
@@ -54,21 +53,14 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
     Ok(())
 }
 
-async fn packet_forwarder(
-    socket: UdpSocket,
-    listeners: Vec<SocketAddr>,
+fn packet_forwarder(
+    mut xdp_forwarder: xdp_forwarder::XdpForwarder,
     mut rx: mpsc::Receiver<ArrayVec<u8, PACKET_DATA_SIZE>>,
 ) {
-    while let Some(packet) = rx.recv().await {
-        let mut jobs = listeners
-            .iter()
-            .map(async |listener| {
-                if let Err(e) = socket.send_to(packet.as_slice(), listener).await {
-                    eprintln!("failed to send packet to {listener}, {e}");
-                }
-            })
-            .collect::<FuturesUnordered<_>>();
-        while jobs.next().await.is_some() {}
+    while let Some(packet) = rx.blocking_recv() {
+        if let Err(e) = xdp_forwarder.forward_packet(&packet) {
+            eprintln!("failed to forward packet: {e}");
+        }
     }
 }
 
@@ -105,18 +97,21 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let pkt_fwder_socket = UdpSocket::bind("0.0.0.0:0").await?;
-    let pkt_fwder = tokio::spawn(packet_forwarder(
-        pkt_fwder_socket,
-        args.listeners,
-        packet_rx,
-    ));
+    let arp_cache = xdp_forwarder::ArpCache::new(args.listeners).await?;
+    let pkt_fwder = std::thread::spawn(move || {
+        let xdp_forwarder = xdp_forwarder::XdpForwarder::new(&args.iface, arp_cache)?;
+        packet_forwarder(xdp_forwarder, packet_rx);
+
+        Ok::<_, anyhow::Error>(())
+    });
 
     signal::ctrl_c().await?;
     _ = exit_tx.send(());
 
     turbine_loop.await?;
-    pkt_fwder.await?;
+    pkt_fwder
+        .join()
+        .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))??;
 
     Ok(())
 }
