@@ -13,13 +13,13 @@ use futures::{TryStreamExt, stream::FuturesUnordered};
 use ping_async::IcmpEchoRequestor;
 use pnet::packet::{
     MutablePacket, Packet,
-    ethernet::{EthernetPacket, MutableEthernetPacket},
+    ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
     ipv4::{Ipv4Packet, MutableIpv4Packet, checksum},
     udp::{MutableUdpPacket, UdpPacket},
 };
 use xdpilone::{BufIdx, Socket, SocketConfig, Umem, UmemConfig, xdp::XdpDesc};
 
-const PACKET_DATA_SIZE: usize = 1232;
+const PACKET_SIZE: usize = 1280;
 const UMEM_SIZE: usize = 1 << 20; // 1MB
 const TX_RING_SIZE: u32 = 1 << 12; // 4096 descriptors
 
@@ -178,7 +178,7 @@ impl XdpForwarder {
         })
     }
 
-    pub fn forward_packet(&mut self, packet_data: &ArrayVec<u8, PACKET_DATA_SIZE>) -> Result<()> {
+    pub fn forward_packet(&mut self, packet_data: &ArrayVec<u8, PACKET_SIZE>) -> Result<()> {
         let mut descriptors = Vec::new();
         let mut buffers_used = Vec::new();
 
@@ -273,10 +273,11 @@ impl XdpForwarder {
         new_eth_packet.clone_from(&eth_packet);
         new_eth_packet.set_destination(pnet::util::MacAddr::from(dst_mac));
 
-        // Create new IPv4 packet
-        let mut new_ipv4_packet = MutableIpv4Packet::new(new_eth_packet.payload_mut())
-            .ok_or_else(|| anyhow!("Failed to create mutable IPv4 packet"))?;
-
+        let mut new_ipv4_packet = match new_eth_packet.get_ethertype() {
+            EtherTypes::Ipv4 => MutableIpv4Packet::new(new_eth_packet.payload_mut())
+                .ok_or_else(|| anyhow!("invalid ipv4 packet"))?,
+            ty => return Err(anyhow!("Unsupported EtherType {ty}")),
+        };
         new_ipv4_packet.clone_from(&ipv4_packet);
         new_ipv4_packet.set_destination(*dst_ip);
 

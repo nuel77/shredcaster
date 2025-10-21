@@ -24,11 +24,11 @@ struct Args {
     listeners: Vec<SocketAddrV4>,
 }
 
-const PACKET_DATA_SIZE: usize = 1232;
+const PACKET_SIZE: usize = 1280;
 
 async fn turbine_watcher_loop<T: Borrow<MapData>>(
     map: RingBuf<T>,
-    tx: mpsc::Sender<ArrayVec<u8, PACKET_DATA_SIZE>>,
+    tx: mpsc::Sender<ArrayVec<u8, PACKET_SIZE>>,
     mut exit: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let mut reader = AsyncFd::new(map)?;
@@ -42,7 +42,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
                 let rb = guard.as_mut().unwrap().get_inner_mut();
 
                 while let Some(read) = rb.next() {
-                    let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_DATA_SIZE>;
+                    let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_SIZE>;
                     let data = unsafe { core::ptr::read(ptr) };
                     _ = tx.send(data).await;
                 }
@@ -55,7 +55,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
 
 fn packet_forwarder(
     mut xdp_forwarder: xdp_forwarder::XdpForwarder,
-    mut rx: mpsc::Receiver<ArrayVec<u8, PACKET_DATA_SIZE>>,
+    mut rx: mpsc::Receiver<ArrayVec<u8, PACKET_SIZE>>,
 ) {
     while let Some(packet) = rx.blocking_recv() {
         if let Err(e) = xdp_forwarder.forward_packet(&packet) {
