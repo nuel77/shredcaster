@@ -13,8 +13,6 @@ futures.workspace = true
 xdpilone.workspace = true
 libc.workspace = true
 network-types.workspace = true
-procfs.workspace = true
-ping-async.workspace = true
 pnet.workspace = true
 
 [build-dependencies]

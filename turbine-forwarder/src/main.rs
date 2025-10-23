@@ -97,9 +97,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let arp_cache = xdp_forwarder::ArpCache::new(args.listeners).await?;
     let pkt_fwder = std::thread::spawn(move || {
-        let xdp_forwarder = xdp_forwarder::XdpForwarder::new(&args.iface, arp_cache)?;
+        let xdp_forwarder = xdp_forwarder::XdpForwarder::new(&args.iface, args.listeners)?;
         packet_forwarder(xdp_forwarder, packet_rx);
 
         Ok::<_, anyhow::Error>(())

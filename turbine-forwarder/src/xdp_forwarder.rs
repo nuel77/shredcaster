@@ -1,16 +1,7 @@
-use std::{
-    cell::UnsafeCell,
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    num::NonZeroU32,
-    ptr::NonNull,
-    time::Duration,
-};
+use std::{cell::UnsafeCell, net::SocketAddrV4, num::NonZeroU32, ptr::NonNull};
 
 use anyhow::{Result, anyhow};
 use arrayvec::ArrayVec;
-use futures::{TryStreamExt, stream::FuturesUnordered};
-use ping_async::IcmpEchoRequestor;
 use pnet::packet::{
     MutablePacket, Packet,
     ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket},
@@ -31,103 +22,16 @@ struct PacketMap(UnsafeCell<[u8; UMEM_SIZE]>);
 unsafe impl Sync for PacketMap {}
 unsafe impl Send for PacketMap {}
 
-pub struct ArpCache {
-    listeners: Vec<SocketAddrV4>,
-    mac_addrs: HashMap<Ipv4Addr, [u8; 6]>,
-}
-
-impl ArpCache {
-    pub async fn new(listeners: Vec<SocketAddrV4>) -> Result<Self> {
-        let mut this = Self {
-            listeners,
-            mac_addrs: HashMap::new(),
-        };
-        let ips_to_ping: Vec<_> = this.listeners.iter().map(|s| *s.ip()).collect();
-
-        println!(
-            "Resolving MAC addresses for {} listeners...",
-            ips_to_ping.len()
-        );
-
-        // First, check existing ARP table
-        let Ok(arp_entries) = procfs::net::arp() else {
-            return Err(anyhow!("Failed to read ARP table"));
-        };
-        for entry in arp_entries {
-            if !ips_to_ping.contains(&entry.ip_address) {
-                continue;
-            }
-            let Some(hw_addr) = entry.hw_address else {
-                continue;
-            };
-            this.mac_addrs.insert(entry.ip_address, hw_addr);
-        }
-
-        // Ping any addresses not found in ARP table
-        let mut ping_tasks = ips_to_ping
-            .iter()
-            .copied()
-            .filter(|ip| !this.mac_addrs.contains_key(ip))
-            .map(|ip| async move {
-                let pinger = IcmpEchoRequestor::new(IpAddr::V4(ip), None, None, None)?;
-                pinger.send().await?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .collect::<FuturesUnordered<_>>();
-        while ping_tasks.try_next().await?.is_some() {}
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let Ok(arp_entries) = procfs::net::arp() else {
-            return Err(anyhow!("Failed to read ARP table"));
-        };
-
-        for entry in arp_entries {
-            if ips_to_ping.contains(&entry.ip_address)
-                && !this.mac_addrs.contains_key(&entry.ip_address)
-            {
-                if let Some(hw_addr) = entry.hw_address {
-                    this.mac_addrs.insert(entry.ip_address, hw_addr);
-                    println!(
-                        "Found MAC for {} after ping: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        entry.ip_address,
-                        hw_addr[0],
-                        hw_addr[1],
-                        hw_addr[2],
-                        hw_addr[3],
-                        hw_addr[4],
-                        hw_addr[5]
-                    );
-                }
-            }
-        }
-
-        // Check if we resolved all addresses
-        let unresolved: Vec<_> = ips_to_ping
-            .iter()
-            .filter(|ip| !this.mac_addrs.contains_key(ip))
-            .collect();
-
-        if !unresolved.is_empty() {
-            return Err(anyhow!(
-                "Could not resolve MAC addresses for: {unresolved:?}"
-            ));
-        }
-
-        Ok(this)
-    }
-}
-
 pub struct XdpForwarder {
     _umem: Umem,
     _socket: Socket,
     tx_ring: xdpilone::RingTx,
     buffer_pool: Vec<BufIdx>,
-    listeners: ArpCache,
+    listeners: Vec<SocketAddrV4>,
 }
 
 impl XdpForwarder {
-    pub fn new(interface_name: &str, listeners: ArpCache) -> Result<Self> {
+    pub fn new(interface_name: &str, listeners: Vec<SocketAddrV4>) -> Result<Self> {
         // Initialize UMEM with static buffer
         let mem = NonNull::new(MEM.0.get() as *mut [u8])
             .ok_or_else(|| anyhow!("Failed to get memory buffer"))?;
@@ -183,7 +87,7 @@ impl XdpForwarder {
         let mut buffers_used = Vec::new();
 
         // Create a packet for each listener
-        for listener in self.listeners.listeners.clone().iter() {
+        for listener in self.listeners.clone().iter() {
             if let Some(buf_idx) = self.get_buffer() {
                 match self.prepare_packet(packet_data, listener, buf_idx) {
                     Ok(desc) => {
@@ -208,11 +112,11 @@ impl XdpForwarder {
             let sent = writer.insert(descriptors.into_iter());
             writer.commit();
 
-            if sent < self.listeners.listeners.len() as u32 {
+            if sent < self.listeners.len() as u32 {
                 eprintln!(
                     "Warning: Only sent {} out of {} packets",
                     sent,
-                    self.listeners.listeners.len()
+                    self.listeners.len()
                 );
             }
         }
@@ -249,12 +153,6 @@ impl XdpForwarder {
         // Get destination info
         let dst_ip = listener.ip();
 
-        let dst_mac = *self
-            .listeners
-            .mac_addrs
-            .get(dst_ip)
-            .expect("[BUG] ARP cache is unpopulated");
-
         // Calculate total packet size
         let eth_hdr_len = 14; // Ethernet header size
         let ip_hdr_len = ipv4_packet.get_header_length() as usize * 4;
@@ -271,7 +169,7 @@ impl XdpForwarder {
             .ok_or_else(|| anyhow!("Failed to create mutable Ethernet packet"))?;
 
         new_eth_packet.clone_from(&eth_packet);
-        new_eth_packet.set_destination(pnet::util::MacAddr::from(dst_mac));
+        new_eth_packet.set_destination(pnet::util::MacAddr::zero());
 
         let mut new_ipv4_packet = match new_eth_packet.get_ethertype() {
             EtherTypes::Ipv4 => MutableIpv4Packet::new(new_eth_packet.payload_mut())
