@@ -20,6 +20,8 @@ struct Args {
     iface: String,
     #[arg(short, long)]
     listeners: Vec<SocketAddr>,
+    #[arg(short, long, default_value_t = 9122)]
+    forwarder_port: u16,
 }
 
 const PACKET_DATA_SIZE: usize = 1232;
@@ -109,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
             false,
             None,
             None,
-            9122,
+            args.forwarder_port,
             None,
             packet_rx,
             drop_sender,
