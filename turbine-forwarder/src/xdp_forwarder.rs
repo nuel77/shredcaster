@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, net::SocketAddrV4, num::NonZeroU32, ptr::NonNull};
+use std::{cell::UnsafeCell, collections::VecDeque, net::{Ipv4Addr, SocketAddrV4}, num::NonZeroU32, ptr::NonNull, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use arrayvec::ArrayVec;
@@ -28,6 +28,8 @@ pub struct XdpForwarder {
     tx_ring: xdpilone::RingTx,
     device_queue: xdpilone::DeviceQueue,
     listeners: Vec<SocketAddrV4>,
+    available_buffers: VecDeque<BufIdx>,
+    frame_size: u32,
 }
 
 impl XdpForwarder {
@@ -35,10 +37,15 @@ impl XdpForwarder {
         let mem = NonNull::new(MEM.0.get() as *mut [u8])
             .ok_or_else(|| anyhow!("Failed to get memory buffer"))?;
 
-        let umem = unsafe { Umem::new(UmemConfig::default(), mem) }
+        let umem_config = UmemConfig::default();
+        let frame_size = umem_config.frame_size;
+
+        let umem = unsafe { Umem::new(umem_config, mem) }
             .map_err(|e| anyhow!("Failed to create UMEM: {e}"))?;
 
-        let mut interface_cstr = String::from(interface_name);
+        let num_frames = umem.len_frames();
+
+        let mut interface_cstr = String::from("wlan0");
         interface_cstr.push('\0');
         let interface_bytes = interface_cstr.as_bytes();
         let name = std::ffi::CStr::from_bytes_with_nul(interface_bytes)
@@ -75,29 +82,53 @@ impl XdpForwarder {
             .map_tx()
             .map_err(|e| anyhow!("Failed to map TX ring: {e:?}"))?;
 
+        let mut available_buffers = VecDeque::with_capacity(num_frames as usize);
+        for i in 0..num_frames {
+            available_buffers.push_back(BufIdx(i));
+        }
+
         Ok(Self {
             umem,
             _socket: socket,
             tx_ring,
             device_queue,
             listeners,
+            available_buffers,
+            frame_size,
         })
     }
 
     pub fn forward_packet(&mut self, packet_data: &ArrayVec<u8, PACKET_SIZE>) -> Result<()> {
+        // First, reclaim completed buffers
         self.process_completions();
 
         let mut descriptors = Vec::new();
+        let mut used_buffers = Vec::new();
 
-        for (idx, listener) in self.listeners.iter().enumerate() {
-            let buf_idx = BufIdx((idx + 1) as u32);
+        // Try to allocate buffers for each listener
+        for listener in self.listeners.iter() {
+            // Get a buffer from the pool
+            let buf_idx = match self.available_buffers.pop_front() {
+                Some(idx) => idx,
+                None => {
+                    eprintln!(
+                        "Warning: No buffers available for {listener}. Sent {}/{} packets",
+                        descriptors.len(),
+                        self.listeners.len()
+                    );
+                    break;
+                }
+            };
 
             match self.prepare_packet(packet_data, listener, buf_idx) {
                 Ok(desc) => {
                     descriptors.push(desc);
+                    used_buffers.push(buf_idx);
                 }
                 Err(e) => {
                     eprintln!("Failed to prepare packet for {listener}: {e}");
+                    // Return the buffer to the pool since we didn't use it
+                    self.available_buffers.push_back(buf_idx);
                 }
             }
         }
@@ -114,12 +145,15 @@ impl XdpForwarder {
                 self.tx_ring.wake();
             }
 
-            if sent < self.listeners.len() as u32 {
+            if sent < used_buffers.len() as u32 {
                 eprintln!(
                     "Warning: Only sent {} out of {} packets",
                     sent,
-                    self.listeners.len()
+                    used_buffers.len()
                 );
+                for buf_idx in used_buffers.iter().skip(sent as usize) {
+                    self.available_buffers.push_back(*buf_idx);
+                }
             }
         }
 
@@ -128,7 +162,12 @@ impl XdpForwarder {
 
     fn process_completions(&mut self) {
         let mut reader = self.device_queue.complete(TX_RING_SIZE);
-        while reader.read().is_some() {}
+
+        while let Some(addr) = reader.read() {
+            println!("sent packets!");
+            let buf_idx = BufIdx((addr / self.frame_size as u64) as u32);
+            self.available_buffers.push_back(buf_idx);
+        }
 
         reader.release();
     }
@@ -175,7 +214,7 @@ impl XdpForwarder {
             .ok_or_else(|| anyhow!("Failed to create mutable Ethernet packet"))?;
 
         new_eth_packet.clone_from(&eth_packet);
-        new_eth_packet.set_destination(pnet::util::MacAddr::zero());
+        new_eth_packet.set_destination(pnet::util::MacAddr::broadcast());
 
         let mut new_ipv4_packet = match new_eth_packet.get_ethertype() {
             EtherTypes::Ipv4 => MutableIpv4Packet::new(new_eth_packet.payload_mut())

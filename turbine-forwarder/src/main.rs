@@ -1,18 +1,16 @@
-use std::{borrow::Borrow, net::SocketAddrV4};
+use std::{borrow::Borrow, net::SocketAddr, sync::Arc, thread, time::Duration};
 
+use agave_xdp::device::{NetworkDevice, QueueId};
 use arrayvec::ArrayVec;
-mod xdp_forwarder;
+// mod xdp_forwarder;
 use aya::{
     Ebpf, include_bytes_aligned,
     maps::{Array, MapData, RingBuf},
     programs::{Xdp, XdpFlags},
 };
 use clap::Parser;
-use tokio::{
-    io::unix::AsyncFd,
-    signal,
-    sync::{mpsc, oneshot},
-};
+use crossbeam_channel::TryRecvError;
+use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
 
 #[derive(Parser)]
 struct Args {
@@ -21,14 +19,15 @@ struct Args {
     #[arg(short, long)]
     iface: String,
     #[arg(short, long)]
-    listeners: Vec<SocketAddrV4>,
+    listeners: Vec<SocketAddr>,
 }
 
-const PACKET_SIZE: usize = 1280;
+const PACKET_DATA_SIZE: usize = 1232;
 
 async fn turbine_watcher_loop<T: Borrow<MapData>>(
     map: RingBuf<T>,
-    tx: mpsc::Sender<ArrayVec<u8, PACKET_SIZE>>,
+    tx: crossbeam_channel::Sender<(Arc<[SocketAddr]>, ArrayVec<u8, PACKET_DATA_SIZE>)>,
+    listeners: Arc<[SocketAddr]>,
     mut exit: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let mut reader = AsyncFd::new(map)?;
@@ -42,26 +41,15 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
                 let rb = guard.as_mut().unwrap().get_inner_mut();
 
                 while let Some(read) = rb.next() {
-                    let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_SIZE>;
+                    let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_DATA_SIZE>;
                     let data = unsafe { core::ptr::read(ptr) };
-                    _ = tx.send(data).await;
+                    _ = tx.try_send((listeners.clone(), data));
                 }
             }
         }
     }
 
     Ok(())
-}
-
-fn packet_forwarder(
-    mut xdp_forwarder: xdp_forwarder::XdpForwarder,
-    mut rx: mpsc::Receiver<ArrayVec<u8, PACKET_SIZE>>,
-) {
-    while let Some(packet) = rx.blocking_recv() {
-        if let Err(e) = xdp_forwarder.forward_packet(&packet) {
-            eprintln!("failed to forward packet: {e}");
-        }
-    }
 }
 
 #[tokio::main]
@@ -89,19 +77,43 @@ async fn main() -> anyhow::Result<()> {
 
     let (exit_tx, exit_rx) = oneshot::channel();
 
-    let (packet_tx, packet_rx) = mpsc::channel(8192);
-
+    let (packet_tx, packet_rx) = crossbeam_channel::unbounded();
+    let (drop_sender, drop_rx) = crossbeam_channel::unbounded();
     let turbine_loop = tokio::spawn(async move {
-        if let Err(e) = turbine_watcher_loop(turbine_packets, packet_tx, exit_rx).await {
+        if let Err(e) =
+            turbine_watcher_loop(turbine_packets, packet_tx, args.listeners.into(), exit_rx).await
+        {
             eprintln!("turbine watcher stopped {e}");
         }
     });
 
-    let pkt_fwder = std::thread::spawn(move || {
-        let xdp_forwarder = xdp_forwarder::XdpForwarder::new(&args.iface, args.listeners)?;
-        packet_forwarder(xdp_forwarder, packet_rx);
+    let pkt_dropper = std::thread::spawn(move || {
+        loop {
+            match drop_rx.try_recv() {
+                Ok(i) => {
+                    drop(i);
+                }
+                Err(TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    });
 
-        Ok::<_, anyhow::Error>(())
+    let pkt_fwder = std::thread::spawn(move || {
+        agave_xdp::tx_loop::tx_loop(
+            0,
+            &NetworkDevice::new(&args.iface).unwrap(),
+            QueueId(0),
+            false,
+            None,
+            None,
+            9122,
+            None,
+            packet_rx,
+            drop_sender,
+        )
     });
 
     signal::ctrl_c().await?;
@@ -110,7 +122,10 @@ async fn main() -> anyhow::Result<()> {
     turbine_loop.await?;
     pkt_fwder
         .join()
-        .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))??;
+        .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))?;
+    pkt_dropper
+        .join()
+        .map_err(|e| anyhow::anyhow!("packet dropper panicked: {e:?}"))?;
 
     Ok(())
 }

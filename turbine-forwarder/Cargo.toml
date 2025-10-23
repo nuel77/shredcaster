@@ -14,6 +14,8 @@ xdpilone.workspace = true
 libc.workspace = true
 network-types.workspace = true
 pnet.workspace = true
+crossbeam-channel = "0.5.15"
+agave-xdp = "3.0.7"
 
 [build-dependencies]
 cargo_metadata = "0.23.0"

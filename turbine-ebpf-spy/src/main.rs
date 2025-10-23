@@ -18,12 +18,11 @@ use network_types::{
 };
 
 const PACKET_DATA_SIZE: usize = 1232;
-const PACKET_SIZE: usize = 1280;
 
 #[map]
 static TURBINE_PORT: Array<u16> = Array::with_max_entries(1, 0);
 
-const PACKET_BUF_SIZE: usize = mem::size_of::<ArrayVec<u8, PACKET_SIZE>>();
+const PACKET_BUF_SIZE: usize = mem::size_of::<ArrayVec<u8, PACKET_DATA_SIZE>>();
 
 // Store a max of 8192 packets
 #[map]
@@ -87,20 +86,25 @@ fn try_xdp_turbine_probe(ctx: XdpContext) -> Result<u32, ()> {
     if packet_data_len > PACKET_DATA_SIZE {
         return Ok(XDP_PASS);
     }
+    offset += mem::size_of::<UdpHdr>();
 
-    let Some(mut event) = PACKET_BUF.reserve::<ArrayVec<u8, PACKET_SIZE>>(0) else {
+    let Some(mut event) = PACKET_BUF.reserve::<ArrayVec<u8, PACKET_DATA_SIZE>>(0) else {
         return Ok(XDP_PASS);
     };
     unsafe {
         event.write(ArrayVec::new());
         let packet_buf = event.assume_init_mut();
-        let len = ctx.data_end() - ctx.data();
-        if !aya_ebpf::check_bounds_signed(len as i64, 1, PACKET_SIZE as i64) {
+        if offset > packet_data_len {
             event.discard(0);
             return Ok(XDP_PASS);
         }
 
-        match bpf_xdp_load_bytes(ctx.ctx, 0, packet_buf.as_mut_ptr() as *mut _, len as u32) {
+        match bpf_xdp_load_bytes(
+            ctx.ctx,
+            offset as u32,
+            packet_buf.as_mut_ptr() as *mut _,
+            packet_data_len as u32,
+        ) {
             0 => {
                 packet_buf.set_len(packet_data_len);
                 event.submit(0);
