@@ -1,21 +1,32 @@
-use std::{borrow::Borrow, net::SocketAddr, sync::Arc, thread, time::Duration};
+mod metrics;
+
+use std::{
+    borrow::Borrow,
+    net::SocketAddr,
+    sync::Arc,
+    thread::{self},
+    time::Duration,
+};
 
 use agave_xdp::device::{NetworkDevice, QueueId};
 use arrayvec::ArrayVec;
 // mod xdp_forwarder;
 use aya::{
     Ebpf, include_bytes_aligned,
-    maps::{Array, MapData, RingBuf},
+    maps::{Array, MapData, PerCpuValues, RingBuf},
     programs::{SchedClassifier, TcAttachType, Xdp, XdpFlags, tc},
+    util::nr_cpus,
 };
 use clap::Parser;
 use crossbeam_channel::TryRecvError;
 use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
 
+use crate::metrics::PacketCtr;
+
 #[derive(Parser)]
 struct Args {
     #[arg(short, long)]
-    port: u16,
+    tvu_ports: Vec<u16>,
     #[arg(short, long)]
     iface: String,
     #[arg(short, long)]
@@ -32,6 +43,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
     map: RingBuf<T>,
     tx: crossbeam_channel::Sender<(Arc<[SocketAddr]>, ArrayVec<u8, PACKET_DATA_SIZE>)>,
     listeners: Arc<[SocketAddr]>,
+    packet_counter: PacketCtr,
     mut exit: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let mut reader = AsyncFd::new(map)?;
@@ -44,11 +56,14 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
             mut guard = reader.readable_mut() => {
                 let rb = guard.as_mut().unwrap().get_inner_mut();
 
+                let mut pkts = 0;
                 while let Some(read) = rb.next() {
                     let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_DATA_SIZE>;
                     let data = unsafe { core::ptr::read(ptr) };
                     _ = tx.try_send((listeners.clone(), data));
+                    pkts += 1;
                 }
+                packet_counter.add(pkts);
             }
         }
     }
@@ -73,6 +88,12 @@ fn load_tc_program(ebpf: &mut Ebpf, iface: &str) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    if args.tvu_ports.is_empty() || args.tvu_ports.len() > 100 {
+        return Err(anyhow::anyhow!(
+            "must specify between 1 and 100 tvu ports to watch"
+        ));
+    }
+
     let mut bpf = Ebpf::load(include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/turbine-ebpf-spy.o"
@@ -94,22 +115,41 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("not watching turbine egress as no egress port was specified");
     }
 
-    let mut turbine_port_map = Array::try_from(bpf.map_mut("TURBINE_PORT").unwrap())?;
-    turbine_port_map.set(0, args.port, 0)?;
-
-    println!("started watching turbine on {}", args.port);
+    let nr_cpus = nr_cpus().map_err(|(_, error)| error)?;
+    let mut turbine_port_map =
+        aya::maps::PerCpuHashMap::<_, _, u8>::try_from(bpf.map_mut("TURBINE_PORTS").unwrap())?;
+    for port in args.tvu_ports {
+        turbine_port_map.insert(port, PerCpuValues::try_from(vec![0; nr_cpus])?, 0)?;
+        println!("started watching turbine on {port}");
+    }
 
     let turbine_packets = RingBuf::try_from(bpf.take_map("PACKET_BUF").unwrap())?;
 
     let (exit_tx, exit_rx) = oneshot::channel();
 
+    let packet_counter = PacketCtr::default();
+
     let (packet_tx, packet_rx) = crossbeam_channel::unbounded();
     let (drop_sender, drop_rx) = crossbeam_channel::unbounded();
+
+    let packet_counter_c = packet_counter.clone();
     let turbine_loop = tokio::spawn(async move {
-        if let Err(e) =
-            turbine_watcher_loop(turbine_packets, packet_tx, args.listeners.into(), exit_rx).await
+        if let Err(e) = turbine_watcher_loop(
+            turbine_packets,
+            packet_tx,
+            args.listeners.into(),
+            packet_counter_c,
+            exit_rx,
+        )
+        .await
         {
             eprintln!("turbine watcher stopped {e}");
+        }
+    });
+
+    let pkt_counter_loop = tokio::spawn(async move {
+        if let Err(e) = packet_counter.start_print_loop().await {
+            eprintln!("packet metrics stopped: {e}");
         }
     });
 
@@ -146,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
     _ = exit_tx.send(());
 
     turbine_loop.await?;
+    pkt_counter_loop.await?;
     pkt_fwder
         .join()
         .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))?;

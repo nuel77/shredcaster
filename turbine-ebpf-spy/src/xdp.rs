@@ -5,7 +5,7 @@ use aya_ebpf::{
     bindings::xdp_action::XDP_PASS,
     helpers::generated::bpf_xdp_load_bytes,
     macros::{map, xdp},
-    maps::Array,
+    maps::PerCpuHashMap,
     programs::XdpContext,
 };
 use network_types::{
@@ -17,7 +17,7 @@ use network_types::{
 use crate::common::{PACKET_BUF, PACKET_DATA_SIZE};
 
 #[map]
-static TURBINE_PORT: Array<u16> = Array::with_max_entries(1, 0);
+static TURBINE_PORTS: PerCpuHashMap<u16, u8> = PerCpuHashMap::with_max_entries(100, 0);
 
 #[xdp]
 pub fn xdp_turbine_probe(ctx: XdpContext) -> u32 {
@@ -42,10 +42,6 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 }
 
 fn try_xdp_turbine_probe(ctx: XdpContext) -> Result<u32, ()> {
-    let Some(&turbine_port) = TURBINE_PORT.get(0) else {
-        return Ok(XDP_PASS);
-    };
-
     let eth_hdr: *const EthHdr = unsafe { ptr_at(&ctx, 0)? };
     let mut offset = mem::size_of::<EthHdr>();
 
@@ -69,7 +65,8 @@ fn try_xdp_turbine_probe(ctx: XdpContext) -> Result<u32, ()> {
 
     let udp_hdr: *const UdpHdr = unsafe { ptr_at(&ctx, offset)? };
     let dst_port = unsafe { (*udp_hdr).dst_port() };
-    if dst_port != turbine_port {
+    // SAFETY: we don't call `remove` on TURBINE_PORTS
+    if unsafe { TURBINE_PORTS.get(&dst_port) }.is_none() {
         return Ok(XDP_PASS);
     }
 

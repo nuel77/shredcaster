@@ -12,6 +12,7 @@ arrayvec.workspace = true
 futures.workspace = true
 crossbeam-channel = "0.5.15"
 agave-xdp = "3.0.7"
+crossterm = "0.29.0"
 
 [build-dependencies]
 cargo_metadata = "0.23.0"
