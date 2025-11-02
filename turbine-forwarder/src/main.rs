@@ -50,7 +50,6 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
 
     loop {
         tokio::select! {
-            biased;
             _ = &mut exit => {
                 break;
             }
@@ -155,8 +154,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let pkt_counter_loop = std::thread::spawn(move || {
-        if let Err(e) = start_packet_counter_print_loop(packet_counter) {
+    let pkt_counter_loop = tokio::spawn(async move {
+        if let Err(e) = start_packet_counter_print_loop(packet_counter).await {
             eprintln!("packet metrics stopped: {e}");
         }
     });
@@ -194,9 +193,7 @@ async fn main() -> anyhow::Result<()> {
     _ = exit_tx.send(());
 
     turbine_loop.await?;
-    pkt_counter_loop
-        .join()
-        .map_err(|e| anyhow::anyhow!("packet counter panicked {e:?}"))?;
+    pkt_counter_loop.await?;
     pkt_fwder
         .join()
         .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))?;
