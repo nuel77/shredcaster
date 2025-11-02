@@ -33,7 +33,7 @@ pub async fn start_packet_counter_print_loop(this: SharedPacketCtr) -> anyhow::R
         sto.execute(cursor::MoveToColumn(0))?
             .execute(terminal::Clear(terminal::ClearType::CurrentLine))?;
 
-        println!("Egress Packets: {egress} Ingress Packets: {ingress}");
+        print!("Egress Packets: {egress} Ingress Packets: {ingress}");
         sto.flush()?;
 
         sleep(Duration::from_millis(300)).await;
