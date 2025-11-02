@@ -14,7 +14,7 @@ use network_types::{
     udp::UdpHdr,
 };
 
-use crate::common::{PACKET_BUF, PACKET_DATA_SIZE};
+use crate::common::{PACKET_BUF, PACKET_DATA_SIZE, PacketBuf};
 
 #[map]
 static TURBINE_PORTS: PerCpuHashMap<u16, u8> = PerCpuHashMap::with_max_entries(100, 0);
@@ -76,12 +76,12 @@ fn try_xdp_turbine_probe(ctx: XdpContext) -> Result<u32, ()> {
     }
     offset += mem::size_of::<UdpHdr>();
 
-    let Some(mut event) = PACKET_BUF.reserve::<ArrayVec<u8, PACKET_DATA_SIZE>>(0) else {
+    let Some(mut event) = PACKET_BUF.reserve::<PacketBuf>(0) else {
         return Ok(XDP_PASS);
     };
     unsafe {
-        event.write(ArrayVec::new());
-        let packet_buf = event.assume_init_mut();
+        event.write((ArrayVec::new(), false));
+        let (packet_buf, _) = event.assume_init_mut();
         if offset > packet_data_len || packet_data_len == 0 {
             event.discard(0);
             return Ok(XDP_PASS);

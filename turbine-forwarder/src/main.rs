@@ -21,7 +21,7 @@ use clap::Parser;
 use crossbeam_channel::TryRecvError;
 use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
 
-use crate::metrics::PacketCtr;
+use crate::metrics::{PacketCtr, SharedPacketCtr, start_packet_counter_print_loop};
 
 #[derive(Parser)]
 struct Args {
@@ -43,7 +43,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
     map: RingBuf<T>,
     tx: crossbeam_channel::Sender<(Arc<[SocketAddr]>, ArrayVec<u8, PACKET_DATA_SIZE>)>,
     listeners: Arc<[SocketAddr]>,
-    packet_counter: PacketCtr,
+    packet_counter: SharedPacketCtr,
     mut exit: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
     let mut reader = AsyncFd::new(map)?;
@@ -56,14 +56,19 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
             mut guard = reader.readable_mut() => {
                 let rb = guard.as_mut().unwrap().get_inner_mut();
 
-                let mut pkts = 0;
+                let mut ingress_packets = 0;
+                let mut egress_packets = 0;
                 while let Some(read) = rb.next() {
-                    let ptr = read.as_ptr() as *const ArrayVec<u8, PACKET_DATA_SIZE>;
-                    let data = unsafe { core::ptr::read(ptr) };
+                    let ptr = read.as_ptr() as *const (ArrayVec<u8, PACKET_DATA_SIZE>, bool);
+                    let (data, is_egress) = unsafe { core::ptr::read(ptr) };
                     _ = tx.try_send((listeners.clone(), data));
-                    pkts += 1;
+                    if is_egress {
+                        egress_packets += 1;
+                    } else {
+                        ingress_packets += 1;
+                    }
                 }
-                packet_counter.add(pkts);
+                packet_counter.add(egress_packets, ingress_packets);
             }
         }
     }
@@ -127,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (exit_tx, exit_rx) = oneshot::channel();
 
-    let packet_counter = PacketCtr::default();
+    let packet_counter = Arc::new(PacketCtr::default());
 
     let (packet_tx, packet_rx) = crossbeam_channel::unbounded();
     let (drop_sender, drop_rx) = crossbeam_channel::unbounded();
@@ -148,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let pkt_counter_loop = tokio::spawn(async move {
-        if let Err(e) = packet_counter.start_print_loop().await {
+        if let Err(e) = start_packet_counter_print_loop(packet_counter).await {
             eprintln!("packet metrics stopped: {e}");
         }
     });

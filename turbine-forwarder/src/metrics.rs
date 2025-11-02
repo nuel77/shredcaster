@@ -10,27 +10,34 @@ use std::{
 use crossterm::{ExecutableCommand, cursor, terminal};
 use tokio::time::sleep;
 
-#[derive(Default, Clone)]
-pub struct PacketCtr(Arc<AtomicUsize>);
+pub type SharedPacketCtr = Arc<PacketCtr>;
+
+#[derive(Default)]
+pub struct PacketCtr {
+    ingress: AtomicUsize,
+    egress: AtomicUsize,
+}
 
 impl PacketCtr {
-    pub fn add(&self, packets: usize) {
-        self.0.fetch_add(packets, Ordering::SeqCst);
+    pub fn add(&self, egress_packets: usize, ingress_packets: usize) {
+        self.egress.fetch_add(egress_packets, Ordering::SeqCst);
+        self.ingress.fetch_add(ingress_packets, Ordering::SeqCst);
+    }
+}
+
+pub async fn start_packet_counter_print_loop(this: SharedPacketCtr) -> anyhow::Result<()> {
+    let mut sto = io::stdout();
+    while Arc::strong_count(&this) > 1 {
+        let egress = this.egress.load(Ordering::SeqCst);
+        let ingress = this.ingress.load(Ordering::SeqCst);
+        sto.execute(cursor::MoveToColumn(0))?
+            .execute(terminal::Clear(terminal::ClearType::CurrentLine))?;
+
+        println!("Egress Packets: {egress} Ingress Packets: {ingress}");
+        sto.flush()?;
+
+        sleep(Duration::from_millis(300)).await;
     }
 
-    pub async fn start_print_loop(self) -> anyhow::Result<()> {
-        let mut sto = io::stdout();
-        while Arc::strong_count(&self.0) > 1 {
-            let val = self.0.load(Ordering::SeqCst);
-            sto.execute(cursor::MoveToColumn(0))?
-                .execute(terminal::Clear(terminal::ClearType::CurrentLine))?;
-
-            print!("Egress Packets: {val}");
-            sto.flush()?;
-
-            sleep(Duration::from_millis(300)).await;
-        }
-
-        Ok(())
-    }
+    Ok(())
 }

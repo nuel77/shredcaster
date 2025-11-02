@@ -12,7 +12,7 @@ use network_types::{
     udp::UdpHdr,
 };
 
-use crate::common::{PACKET_BUF, PACKET_DATA_SIZE};
+use crate::common::{PACKET_BUF, PACKET_DATA_SIZE, PacketBuf};
 
 #[map]
 static SHRED_EGRESS_PORT: Array<u16> = Array::with_max_entries(1, 0);
@@ -53,12 +53,12 @@ fn try_tc_egress_probe(ctx: TcContext) -> Result<i32, ()> {
     }
     offset += UdpHdr::LEN;
 
-    let Some(mut event) = PACKET_BUF.reserve::<ArrayVec<u8, PACKET_DATA_SIZE>>(0) else {
+    let Some(mut event) = PACKET_BUF.reserve::<PacketBuf>(0) else {
         return Ok(TC_ACT_PIPE);
     };
     unsafe {
-        event.write(ArrayVec::new());
-        let packet_buf = event.assume_init_mut();
+        event.write((ArrayVec::new(), true));
+        let (packet_buf, _) = event.assume_init_mut();
         if offset > packet_data_len {
             event.discard(0);
             return Ok(TC_ACT_PIPE);
