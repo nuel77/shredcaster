@@ -1,11 +1,11 @@
 # Shredcaster
 
-Shredcaster is a lightweight utility that lets any Solana full node (validator, RPC, or Mithril verifying node) forward Turbine (TVU) packets to arbitrary UDP listeners.
+Shredcaster is a lightweight utility that lets any Solana full node (validator, RPC, or Mithril verifying node) forward Turbine (TVU) shred packets to arbitrary UDP listeners.
 Key benefits of using shredcaster include:
-1. Standalone tool which requires minimal or zero modification of the codebase
+1. Standalone tool which requires minimal to no modification of existing Solana client codebase
    * Modification is needed if the broadcast has XDP turned on. This is for forwarding shreds produced by a leader
-2. Doesn't require validator restart or reconfiguration
-3. Uses XDP to have zero impact on validator performance
+2. Does not require restart or reconfiguration of node
+3. Greatly minimizes any potential performance impacts by using XDP
 4. Can forward shreds to multiple recipients
 
 ## Proposed Architecture
