@@ -94,12 +94,11 @@ sudo ./target/release/shredcaster --tvu-ports 9000 --iface eth0 --listeners 127.
 
 This monitors incoming Turbine shreds on UDP port 9000 and interface `eth0`, forwarding this traffic to a UDP socket running on `127.0.0.1:5000`
 
-Multiple listeners are supported
 ```
 --listeners 127.0.0.1:5000 --listeners 127.0.0.1:5001
 ```
 
-Listeners can also be remote addresses, with multiple TVU ports supported.
+Listeners can be local or remote addresses, and multiple TVU ports are supported.
 
 
 ### Monitoring
