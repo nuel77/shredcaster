@@ -1,6 +1,6 @@
-# Shredcast
+# Shredcaster
 
-Shredcast is a utility to forward Turbine (TVU) packets from a Solana Node to arbitrary UDP listeners. It aims to be minimaly invasive.
+Shredcaster is a utility that forwards Turbine (TVU) packets from a Solana Node to arbitrary UDP listeners. It aims to be performant and minimaly invasive.
 
 ## Proposed Architecture
 
