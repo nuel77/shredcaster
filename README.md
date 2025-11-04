@@ -13,7 +13,7 @@ Note: If XDP-based broadcast is enabled, a small change is required to forward l
 
 4) Multi-recipient forwarding – Supports sending shreds to multiple UDP listeners simultaneously.
 
-## Proposed Architecture
+## Architecture
 
 ```mermaid
 sequenceDiagram
@@ -66,7 +66,9 @@ sequenceDiagram
 ```
 
 
-## Compilation
+## Running Shredcaster
+
+### Building
 
 [bpf-linker](https://github.com/aya-rs/bpf-linker) is required to compile the BPF probe which monitors TVU traffic.
 
@@ -74,7 +76,7 @@ sequenceDiagram
 cargo build --release -p shredcaster
 ```
 
-## Running
+### Running
 
 Elevated privileges are required to run `shredcaster`
 
@@ -102,6 +104,6 @@ Listener can also be a remote address.
 Multiple TVU ports are also supported
 
 
-## Monitoring
+### Monitoring
 
 Watching TVU broadcast is currently work in progress. It can be enabled with the `--watch-egress` flag
