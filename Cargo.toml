@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["turbine-ebpf-spy", "turbine-forwarder", "udp-receiver", "udp-spammer"]
-default-members = ["turbine-forwarder"]
+members = ["turbine-ebpf-spy", "shred-forwarder", "udp-receiver", "udp-spammer"]
+default-members = ["shred-forwarder"]
 
 [workspace.dependencies]
 aya-ebpf = { git = "https://github.com/aya-rs/aya.git" }

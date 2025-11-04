@@ -825,6 +825,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "shred-forwarder"
+version = "0.1.0"
+dependencies = [
+ "agave-xdp",
+ "anyhow",
+ "arrayvec",
+ "aya 0.13.1 (git+https://github.com/aya-rs/aya.git)",
+ "cargo_metadata",
+ "clap",
+ "crossbeam-channel",
+ "crossterm",
+ "futures",
+ "tokio",
+ "turbine-ebpf-spy",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -968,23 +985,6 @@ dependencies = [
  "arrayvec",
  "aya-ebpf",
  "network-types",
-]
-
-[[package]]
-name = "turbine-forwarder"
-version = "0.1.0"
-dependencies = [
- "agave-xdp",
- "anyhow",
- "arrayvec",
- "aya 0.13.1 (git+https://github.com/aya-rs/aya.git)",
- "cargo_metadata",
- "clap",
- "crossbeam-channel",
- "crossterm",
- "futures",
- "tokio",
- "turbine-ebpf-spy",
 ]
 
 [[package]]
