@@ -16,6 +16,7 @@ Note: If XDP-based broadcast is enabled, a small change is required to forward l
 ## Architecture
 
 ```mermaid
+%%{init: { "theme": "base", "themeVariables": { "background": "#ffffff" } }}%%
 sequenceDiagram
     actor RL as Remote Listener
     participant NIC
