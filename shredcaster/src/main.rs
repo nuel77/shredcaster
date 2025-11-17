@@ -51,9 +51,15 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
 ) -> anyhow::Result<()> {
     let mut reader = AsyncFd::with_interest(map, Interest::READABLE)?;
     let mut max_duration = Duration::from_micros(0);
-    let mut start = Instant::now();
+    let mut max_guard_duration = Duration::from_micros(0);
     loop {
+        let mut start = Instant::now();
         let mut guard = reader.readable_mut().await.unwrap();
+        let guard_duration = start.elapsed();
+        if guard_duration > max_guard_duration {
+            max_guard_duration = guard_duration;
+            println!("Guard max duration of {:?}", max_guard_duration);
+        }
         let rb = guard.get_inner_mut();
 
         let mut ingress_packets = 0;
@@ -72,7 +78,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
         let duration = start.elapsed();
         if duration > max_duration {
             max_duration = duration;
-            println!("loop duration {}us", duration.as_micros());
+            println!("loop max duration {}us", duration.as_micros());
         }
         start = Instant::now();
         guard.clear_ready();
