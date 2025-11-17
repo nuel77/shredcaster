@@ -72,7 +72,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
         let duration = start.elapsed();
         if duration > max_duration {
             max_duration = duration;
-            info!("loop duration {}us", duration.as_micros());
+            println!("loop duration {}us", duration.as_micros());
         }
         start = Instant::now();
         guard.clear_ready();
@@ -159,11 +159,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let pkt_counter_loop = tokio::spawn(async move {
-        if let Err(e) = start_packet_counter_print_loop(packet_counter).await {
-            eprintln!("packet metrics stopped: {e}");
-        }
-    });
+    // let pkt_counter_loop = tokio::spawn(async move {
+    //     if let Err(e) = start_packet_counter_print_loop(packet_counter).await {
+    //         eprintln!("packet metrics stopped: {e}");
+    //     }
+    // });
 
     let pkt_dropper = std::thread::spawn(move || {
         loop {
