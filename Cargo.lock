@@ -837,6 +837,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "futures",
+ "log",
  "tokio",
  "turbine-ebpf-spy",
 ]

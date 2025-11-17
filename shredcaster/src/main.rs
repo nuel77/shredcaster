@@ -7,7 +7,7 @@ use std::{
     thread::{self},
     time::Duration,
 };
-
+use std::time::Instant;
 use agave_xdp::device::{NetworkDevice, QueueId};
 use arrayvec::ArrayVec;
 // mod xdp_forwarder;
@@ -20,7 +20,8 @@ use aya::{
 use clap::Parser;
 use crossbeam_channel::TryRecvError;
 use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
-
+use tokio::io::Interest;
+use log::info;
 use crate::metrics::{PacketCtr, SharedPacketCtr, start_packet_counter_print_loop};
 
 #[derive(Parser)]
@@ -48,35 +49,35 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
     packet_counter: SharedPacketCtr,
     mut exit: oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
-    let mut reader = AsyncFd::new(map)?;
-
+    let mut reader = AsyncFd::with_interest(map, Interest::READABLE)?;
+    let mut max_duration = Duration::from_micros(0);
+    let mut start = Instant::now();
     loop {
-        tokio::select! {
-            _ = &mut exit => {
-                break;
-            }
-            mut guard = reader.readable_mut() => {
-                let guard = guard.as_mut().unwrap();
-                let rb = guard.get_inner_mut();
+        let mut guard = reader.readable_mut().await.unwrap();
+        let guard = guard.as_mut().unwrap();
+        let rb = guard.get_inner_mut();
 
-                let mut ingress_packets = 0;
-                let mut egress_packets = 0;
-                while let Some(read) = rb.next() {
-                    let ptr = read.as_ptr() as *const (ArrayVec<u8, PACKET_DATA_SIZE>, bool);
-                    let (data, is_egress) = unsafe { core::ptr::read(ptr) };
-                    _ = tx.try_send((listeners.clone(), data));
-                    if is_egress {
-                        egress_packets += 1;
-                    } else {
-                        ingress_packets += 1;
-                    }
-                }
-                packet_counter.add(egress_packets, ingress_packets);
-                guard.clear_ready();
+        let mut ingress_packets = 0;
+        let mut egress_packets = 0;
+        while let Some(read) = rb.next() {
+            let ptr = read.as_ptr() as *const (ArrayVec<u8, PACKET_DATA_SIZE>, bool);
+            let (data, is_egress) = unsafe { core::ptr::read(ptr) };
+            _ = tx.try_send((listeners.clone(), data));
+            if is_egress {
+                egress_packets += 1;
+            } else {
+                ingress_packets += 1;
             }
         }
+        packet_counter.add(egress_packets, ingress_packets);
+        let duration = start.elapsed();
+        if duration > max_duration {
+            max_duration = duration;
+            info!("loop duration {}us", duration.as_micros());
+        }
+        start = Instant::now();
+        guard.clear_ready();
     }
-
     Ok(())
 }
 
@@ -153,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
             packet_counter_c,
             exit_rx,
         )
-        .await
+            .await
         {
             eprintln!("turbine watcher stopped {e}");
         }
