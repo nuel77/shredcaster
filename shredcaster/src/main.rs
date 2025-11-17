@@ -198,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
     _ = exit_tx.send(());
 
     turbine_loop.await?;
-    pkt_counter_loop.await?;
+    // pkt_counter_loop.await?;
     pkt_fwder
         .join()
         .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))?;
