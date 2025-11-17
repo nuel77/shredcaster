@@ -54,7 +54,6 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
     let mut start = Instant::now();
     loop {
         let mut guard = reader.readable_mut().await.unwrap();
-        let guard = guard.as_mut().unwrap();
         let rb = guard.get_inner_mut();
 
         let mut ingress_packets = 0;
