@@ -1,5 +1,8 @@
 mod metrics;
 
+use agave_xdp::device::{NetworkDevice, QueueId};
+use arrayvec::ArrayVec;
+use std::time::Instant;
 use std::{
     borrow::Borrow,
     net::SocketAddr,
@@ -7,10 +10,8 @@ use std::{
     thread::{self},
     time::Duration,
 };
-use std::time::Instant;
-use agave_xdp::device::{NetworkDevice, QueueId};
-use arrayvec::ArrayVec;
 // mod xdp_forwarder;
+use crate::metrics::{PacketCtr, SharedPacketCtr, start_packet_counter_print_loop};
 use aya::{
     Ebpf, include_bytes_aligned,
     maps::{Array, MapData, PerCpuValues, RingBuf},
@@ -19,10 +20,9 @@ use aya::{
 };
 use clap::Parser;
 use crossbeam_channel::TryRecvError;
-use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
-use tokio::io::Interest;
 use log::info;
-use crate::metrics::{PacketCtr, SharedPacketCtr, start_packet_counter_print_loop};
+use tokio::io::Interest;
+use tokio::{io::unix::AsyncFd, signal, sync::oneshot};
 
 #[derive(Parser)]
 struct Args {
@@ -56,10 +56,8 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
         let mut start = Instant::now();
         let mut guard = reader.readable_mut().await.unwrap();
         let guard_duration = start.elapsed();
-        if guard_duration > max_guard_duration {
-            max_guard_duration = guard_duration;
-            println!("Guard max duration of {:?}", max_guard_duration);
-        }
+        println!("Guard max duration of {:?}", guard_duration);
+
         let rb = guard.get_inner_mut();
 
         let mut ingress_packets = 0;
@@ -76,10 +74,7 @@ async fn turbine_watcher_loop<T: Borrow<MapData>>(
         }
         packet_counter.add(egress_packets, ingress_packets);
         let duration = start.elapsed();
-        if duration > max_duration {
-            max_duration = duration;
-            println!("loop max duration {}us", duration.as_micros());
-        }
+        println!("loop max duration {} us", duration.as_micros());
         start = Instant::now();
         guard.clear_ready();
     }
@@ -159,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
             packet_counter_c,
             exit_rx,
         )
-            .await
+        .await
         {
             eprintln!("turbine watcher stopped {e}");
         }
