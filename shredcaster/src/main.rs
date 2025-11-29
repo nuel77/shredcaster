@@ -195,10 +195,14 @@ async fn main() -> anyhow::Result<()> {
     });
 
     signal::ctrl_c().await?;
+    printlin!("recvd shutdown");
     _ = exit_tx.send(());
+    println!("exit send");
 
     turbine_loop.await?;
+    println!("turbin loop exit");
     pkt_counter_loop.await?;
+    println!("pck coutner loop exit");
     pkt_fwder
         .join()
         .map_err(|e| anyhow::anyhow!("packet forwarder panicked: {e:?}"))?;
